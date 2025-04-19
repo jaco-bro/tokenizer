@@ -1,0 +1,17 @@
+.{
+    .name = "tokenizer",
+    .version = "0.0.1",
+    .dependencies = .{
+        .pcre2 = .{
+            .url = "https://github.com/PCRE2Project/pcre2/archive/refs/tags/pcre2-10.45.tar.gz",
+            .hash = "1220c927731a4b31f5ebf8b4f33f0efe6fa1561cdcf026f39cbee512e08ad24fb785",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
