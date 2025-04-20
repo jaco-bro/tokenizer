@@ -1,5 +1,5 @@
 # Tokenizer
-A Zig library for tokenizing text using PCRE2 regular expressions.
+A Zig library for tokenizing text using PCRE2 regular expressions - now also available as a Python package via `pip`.
 
 ## Requirement
 zig v0.13.0
@@ -20,4 +20,35 @@ zig build run -- --encode "hello world"
 zig build run -- --decode "{14990, 1879}"
 zig build run -- --model "phi-4-4bit" --encode "hello world"
 zig build run -- --model "phi-4-4bit" --decode "15339 1917"
+```
+
+## Python (optional)
+Tokenizer is also pip-installable for use from Python:
+```bash
+pip install tokenizerz
+python
+```
+
+Usage:
+```python
+>>> import tokenizerz
+
+>>> tokenizer = tokenizerz.Tokenizer()
+File 'Qwen2.5-Coder-1.5B-4bit/tokenizer.json' already exists. Skipping download.
+All files already exist. No download needed.
+
+>>> tokens = tokenizer.encode("Hello, world!")
+
+>>> print(tokens)
+[9707, 11, 1879, 0]
+
+>>> tokenizer.decode(tokens)
+'Hello, world!'
+
+>>> exit()
+```
+
+Shell:
+```bash
+bpe --encode "hello world"
 ```

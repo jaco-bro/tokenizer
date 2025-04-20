@@ -2,7 +2,8 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    // const optimize = b.standardOptimizeOption(.{});
+    const optimize: std.builtin.OptimizeMode = .ReleaseFast;
     const pcre2_dep = b.dependency("pcre2", .{
         .target = target,
         .optimize = optimize,
@@ -12,7 +13,7 @@ pub fn build(b: *std.Build) !void {
         .name = "tokenizer_exe",
         .root_source_file = b.path("src/tokenizer.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = optimize,
     });
     exe.linkLibrary(pcre2_dep.artifact("pcre2-8"));
     const exe_install = b.addInstallArtifact(exe, .{});

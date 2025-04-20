@@ -69,8 +69,9 @@ pub const Tokenizer = struct {
     vocab: std.StringHashMap(u32),
     id_to_token: std.AutoHashMap(u32, []const u8),
     specials: []const []const u8,
+    verbose: bool,
 
-    pub fn init(allocator: std.mem.Allocator, model_name: []const u8) !Self {
+    pub fn init(allocator: std.mem.Allocator, model_name: []const u8, verbose: bool) !Self {
         try download(allocator, "mlx-community", model_name, null);
         const json_path = try std.fmt.allocPrint(allocator, "{s}/tokenizer.json", .{model_name});
         defer allocator.free(json_path);
@@ -140,7 +141,7 @@ pub const Tokenizer = struct {
             const token_id = @as(u32, @intCast(id.integer));
             const token_str = content.string;
             if (vocab.get(token_str)) |old_id| {
-                if (old_id != token_id) std.debug.print("Duplicate: {s} {d} -> {d}", .{ token_str, old_id, token_id });
+                if (old_id != token_id) std.debug.print("Duplicate: {s} {d} -> {d}\n", .{ token_str, old_id, token_id });
                 continue;
             }
             const token_copy = try allocator.dupe(u8, token_str);
@@ -157,6 +158,7 @@ pub const Tokenizer = struct {
             .vocab = vocab,
             .id_to_token = id_to_token,
             .specials = specials,
+            .verbose = verbose,
         };
     }
 
@@ -385,7 +387,7 @@ pub const Tokenizer = struct {
             if (self.vocab.get(segment)) |id| {
                 try result.append(id);
             } else {
-                std.debug.print("Warning: No ID found for segment: '{s}'\n", .{segment});
+                if (self.verbose) std.debug.print("Warning: No ID found for segment: '{s}'\n", .{segment});
                 try result.append(0);
             }
         }
@@ -393,7 +395,7 @@ pub const Tokenizer = struct {
     }
 
     pub fn encode(self: *Self, text: []const u8) ![]const u32 {
-        std.debug.print("\nStr: {s} -> ", .{text});
+        if (self.verbose) std.debug.print("\nStr: {s} -> ", .{text});
         var result = std.ArrayList(u32).init(self.allocator);
         errdefer result.deinit();
         var parts = try self.splitWithSpecials(text);
@@ -405,7 +407,7 @@ pub const Tokenizer = struct {
         }
         for (parts.items) |part| {
             if (self.vocab.get(part)) |id| {
-                std.debug.print("{s}(special) ", .{part});
+                if (self.verbose) std.debug.print("{s}(special) ", .{part});
                 try result.append(id);
                 continue;
             }
@@ -417,43 +419,43 @@ pub const Tokenizer = struct {
                 tokens.deinit();
             }
             for (tokens.items) |token| {
-                std.debug.print("{s}(regular) ", .{token});
+                if (self.verbose) std.debug.print("{s}(regular) ", .{token});
                 var token_ids = try self.bpeMerges(token);
                 defer token_ids.deinit();
                 try result.appendSlice(token_ids.items);
             }
         }
-        std.debug.print("\n\nIDs: ", .{});
-        try stdout.print("{any}", .{result.items});
-        std.debug.print("\n\n", .{});
+        if (self.verbose) std.debug.print("\n\nIDs: ", .{});
+        if (self.verbose) try stdout.print("{any}", .{result.items});
+        if (self.verbose) std.debug.print("\n\n", .{});
         return result.toOwnedSlice();
     }
 
     pub fn decode(self: *Self, token_ids: []const u32) ![]const u8 {
-        std.debug.print("\nIDs: {any} -> ", .{token_ids});
+        if (self.verbose) std.debug.print("\nIDs: {any} -> ", .{token_ids});
         var result = std.ArrayList(u8).init(self.allocator);
         errdefer result.deinit();
         for (token_ids) |id| {
             if (self.id_to_token.get(id)) |token| {
-                std.debug.print("{s}({d}) ", .{ token, id });
+                if (self.verbose) std.debug.print("{s}({d}) ", .{ token, id });
                 try result.appendSlice(token);
             } else {
-                std.debug.print("Warning: Unknown token ID: {d}\n", .{id});
+                if (self.verbose) std.debug.print("Warning: Unknown token ID: {d}\n", .{id});
             }
         }
-        std.debug.print("\n\nStr: ", .{});
-        try stdout.print("{s}", .{result.items});
-        std.debug.print("\n\n", .{});
+        if (self.verbose) std.debug.print("\n\nStr: ", .{});
+        if (self.verbose) try stdout.print("{s}", .{result.items});
+        if (self.verbose) std.debug.print("\n\n", .{});
         return result.toOwnedSlice();
     }
 
     pub fn encodeChat(self: *Self, chat_format: ?[]const u8, replacements: []const []const u8) ![]const u32 {
-        std.debug.print("\nReplacements #: {d}\nChat format: ", .{replacements.len});
+        if (self.verbose) std.debug.print("\nReplacements #: {d}\nChat format: ", .{replacements.len});
         if (chat_format == null) {
-            std.debug.print("null\n", .{});
+            if (self.verbose) std.debug.print("null\n", .{});
             return self.encode(replacements[0]);
         }
-        std.debug.print("{s}\n", .{chat_format.?});
+        if (self.verbose) std.debug.print("{s}\n", .{chat_format.?});
         const format = chat_format.?;
         const formatted = try formatDynamic(self.allocator, format, replacements);
         defer self.allocator.free(formatted);
@@ -461,7 +463,7 @@ pub const Tokenizer = struct {
     }
 };
 
-pub fn formatDynamic(
+fn formatDynamic(
     allocator: std.mem.Allocator,
     chat_fmt: []const u8,
     replacements: []const []const u8,
@@ -486,30 +488,7 @@ pub fn formatDynamic(
     return try result.toOwnedSlice();
 }
 
-pub fn formatRange(comptime format: []const u8, comptime start: usize, comptime end: usize) [end - start][]const u8 {
-    var result: [end - start][]const u8 = undefined;
-    inline for (&result, 0..) |*ptr, i| {
-        ptr.* = std.fmt.comptimePrint(format, .{start + i});
-    }
-    return result;
-}
-
-pub fn formatRangeFloat(comptime count: usize) [count][]const u8 {
-    var result: [count][]const u8 = undefined;
-    inline for (&result, 0..) |*ptr, i| {
-        const seconds = @as(f32, @floatFromInt(i)) * 0.02;
-        const whole = @as(u32, @intFromFloat(seconds));
-        const frac = @as(u32, @intFromFloat((seconds - @as(f32, @floatFromInt(whole))) * 100.0 + 0.5));
-        if (frac < 10) {
-            ptr.* = std.fmt.comptimePrint("<|{d}.0{d}|>", .{ whole, frac });
-        } else {
-            ptr.* = std.fmt.comptimePrint("<|{d}.{d}|>", .{ whole, frac });
-        }
-    }
-    return result;
-}
-
-pub fn download(allocator: std.mem.Allocator, repo_name: []const u8, model_name: []const u8, file_names: ?[]const []const u8) !void {
+fn download(allocator: std.mem.Allocator, repo_name: []const u8, model_name: []const u8, file_names: ?[]const []const u8) !void {
     const default_filenames = [_][]const u8{
         // "model.safetensors",
         // "config.json",
@@ -533,8 +512,9 @@ pub fn download(allocator: std.mem.Allocator, repo_name: []const u8, model_name:
     for (filenames) |filename| {
         const local_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ model_name, filename });
         try paths_to_free.append(local_path);
+        std.debug.print("{s}\n", .{local_path});
         if (fileExists(local_path)) {
-            std.debug.print("File '{s}' already exists. Skipping download.\n", .{local_path});
+            // std.debug.print("File '{s}' already exists. Skipping download.\n", .{local_path});
         } else {
             all_exist = false;
             const url_path = try std.fmt.allocPrint(allocator, "https://huggingface.co/{s}/{s}/resolve/main/{s}", .{ repo_name, model_name, filename });
@@ -545,7 +525,7 @@ pub fn download(allocator: std.mem.Allocator, repo_name: []const u8, model_name:
         }
     }
     if (all_exist) {
-        std.debug.print("All files already exist. No download needed.\n", .{});
+        // std.debug.print("All files already exist. No download needed.\n", .{});
         return;
     }
     try mkdir(model_name);
@@ -605,6 +585,52 @@ fn printUsage(program_name: []const u8) void {
     , .{ program_name, program_name, program_name, program_name, program_name });
 }
 
+pub const TokenizerHandle = ?*anyopaque;
+
+export fn create_tokenizer(model_name: [*:0]const u8, verbose: bool) TokenizerHandle {
+    const allocator = std.heap.c_allocator;
+    const model_name_slice = std.mem.span(model_name);
+    const tokenizer = allocator.create(Tokenizer) catch return null;
+    tokenizer.* = Tokenizer.init(allocator, model_name_slice, verbose) catch {
+        allocator.destroy(tokenizer);
+        return null;
+    };
+    return @ptrCast(tokenizer);
+}
+
+export fn encode_text(handle: TokenizerHandle, text: [*:0]const u8, out_tokens: [*]u32, max_tokens: usize) usize {
+    if (handle == null) return 0;
+    const tokenizer = @as(*Tokenizer, @ptrCast(@alignCast(handle.?)));
+    const text_slice = std.mem.span(text);
+    const token_ids = tokenizer.encode(text_slice) catch return 0;
+    defer tokenizer.allocator.free(token_ids);
+    const tokens_to_copy = @min(token_ids.len, max_tokens);
+    if (tokens_to_copy > 0) {
+        @memcpy(out_tokens[0..tokens_to_copy], token_ids[0..tokens_to_copy]);
+    }
+    return token_ids.len;
+}
+
+export fn decode_tokens(handle: TokenizerHandle, tokens: [*]const u32, token_count: usize, out_text: [*]u8, max_text_len: usize) usize {
+    if (handle == null) return 0;
+    const tokenizer = @as(*Tokenizer, @ptrCast(@alignCast(handle.?)));
+    const tokens_slice = tokens[0..token_count];
+    const text = tokenizer.decode(tokens_slice) catch return 0;
+    defer tokenizer.allocator.free(text);
+    const chars_to_copy = @min(text.len, max_text_len - 1);
+    if (chars_to_copy > 0) {
+        @memcpy(out_text[0..chars_to_copy], text[0..chars_to_copy]);
+    }
+    out_text[chars_to_copy] = 0;
+    return text.len;
+}
+
+export fn free_tokenizer(handle: TokenizerHandle) void {
+    if (handle == null) return;
+    const tokenizer = @as(*Tokenizer, @ptrCast(@alignCast(handle.?)));
+    tokenizer.deinit();
+    std.heap.c_allocator.destroy(tokenizer);
+}
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -652,7 +678,7 @@ pub fn main() !void {
     }
     std.debug.print("Using model: {s}\n", .{model_name});
     // try download(allocator, "mlx-community", model_name, null);
-    var tokenizer = try Tokenizer.init(allocator, model_name);
+    var tokenizer = try Tokenizer.init(allocator, model_name, true);
     defer tokenizer.deinit();
     if (std.mem.eql(u8, command.?, "--encode")) {
         const encode_result = try tokenizer.encode(input.?);
@@ -678,7 +704,7 @@ test "Tokenizer round-trip" {
     const allocator = std.testing.allocator;
     const model_name = "Qwen2.5-Coder-1.5B-4bit";
     // try download(allocator, "mlx-community", model_name, null);
-    var tokenizer = try Tokenizer.init(allocator, model_name);
+    var tokenizer = try Tokenizer.init(allocator, model_name, true);
     defer tokenizer.deinit();
     const text =
         \\<|fim_prefix|>def quicksort(arr):

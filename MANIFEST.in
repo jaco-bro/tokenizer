@@ -1,0 +1,5 @@
+include README.md
+include LICENSE
+include build.zig
+include build.zig.zon
+recursive-include src *
