@@ -3,9 +3,11 @@ import platform
 import ctypes
 import sys
 from ctypes import c_char_p, c_uint32, c_size_t, POINTER, c_void_p, c_bool
+import json
+import jinja2
 
 class Tokenizer:
-    def __init__(self, model_name="Qwen2.5-Coder-1.5B-4bit", verbose=False):
+    def __init__(self, repo_name="Qwen", model_name="Qwen2.5-Coder-0.5B", verbose=False):
         system = platform.system()
         if system == "Darwin": 
             lib_ext = ".dylib"
@@ -22,11 +24,7 @@ class Tokenizer:
             self.lib = ctypes.CDLL(lib_path)
         except OSError as e:
             raise RuntimeError(f"Failed to load the tokenizer library at {lib_path}: {e}")
-        try:
-            self.lib = ctypes.CDLL(lib_path)
-        except OSError as e:
-            raise RuntimeError(f"Failed to load the tokenizer library at {lib_path}: {e}")
-        self.lib.create_tokenizer.argtypes = [c_char_p, c_bool]
+        self.lib.create_tokenizer.argtypes = [c_char_p, c_char_p, c_bool]
         self.lib.create_tokenizer.restype = c_void_p
         self.lib.encode_text.argtypes = [c_void_p, c_char_p, POINTER(c_uint32), c_size_t]
         self.lib.encode_text.restype = c_size_t
@@ -34,10 +32,26 @@ class Tokenizer:
         self.lib.decode_tokens.restype = c_size_t
         self.lib.free_tokenizer.argtypes = [c_void_p]
         self.lib.free_tokenizer.restype = None
-        self.handle = self.lib.create_tokenizer(model_name.encode('utf-8'), verbose)
+        self.handle = self.lib.create_tokenizer(repo_name.encode('utf-8'), model_name.encode('utf-8'), verbose)
         if not self.handle:
             raise RuntimeError(f"Failed to initialize tokenizer with model: {model_name}")
+        try:
+            with open(f'{model_name}/tokenizer_config.json', 'r') as f:
+                config = json.load(f)
+            self.chat_template = config['chat_template']
+        except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
+            self.chat_template = None
+            print(f"No chat template found: {e}")
     
+    def __call__(self, text, use_chat_template=False, pad_token_id=1, pad_position_id=1, **kwargs):
+        if use_chat_template:
+            text = [self.apply_chat_template(text, **kwargs)]
+        elif isinstance(text, str):
+            text = [text]
+        tokens = [self.encode(t) for t in text]
+        input_ids, position_ids, padding_mask = self.pad_token_sequences(tokens, pad_token_id, pad_position_id)
+        return text, input_ids, position_ids, padding_mask
+
     def encode(self, text):
         text_bytes = text.encode('utf-8')
         max_tokens = max(128, len(text_bytes) * 16)
@@ -56,8 +70,7 @@ class Tokenizer:
         tokens_arr = arr_type(*tokens)
         max_text_len = max(256, len(tokens) * 128 + 1)
         text_buffer = ctypes.create_string_buffer(max_text_len)
-        actual_text_len = self.lib.decode_tokens(self.handle, tokens_arr, len(tokens), 
-                                              text_buffer, max_text_len)
+        actual_text_len = self.lib.decode_tokens(self.handle, tokens_arr, len(tokens), text_buffer, max_text_len)
         if actual_text_len == 0:
             raise RuntimeError("Decoding failed")
         if actual_text_len < max_text_len:
@@ -71,16 +84,44 @@ class Tokenizer:
         if hasattr(self, 'handle') and self.handle:
             self.lib.free_tokenizer(self.handle)
 
+    def apply_chat_template(self, messages, **kwargs):
+        if not self.chat_template:
+            raise ValueError("No chat template available")
+        if not (isinstance(messages, list) and all(isinstance(m, dict) for m in messages)):
+            raise ValueError("Messages must be a list of dictionaries")
+        env = jinja2.Environment(autoescape=False)
+        template = env.from_string(self.chat_template)
+        try:
+            return template.render(messages=messages, **kwargs)
+        except Exception as e:
+            raise RuntimeError(f"Failed to render chat template: {e}")
+
+    @staticmethod
+    def pad_token_sequences(sequences, pad_token_id, pad_position_id):
+        max_len = max(len(seq) for seq in sequences)
+        input_ids = []
+        position_ids = []
+        padding_mask = []
+        for seq in sequences:
+            pad_len = max_len - len(seq)
+            padded = [pad_token_id] * pad_len + seq
+            input_ids.append(padded)
+            pos_ids = [pad_position_id] * pad_len + list(range(len(seq)))
+            position_ids.append(pos_ids)
+            mask = [False] * pad_len + [True] * len(seq)
+            padding_mask.append(mask)
+        return input_ids, position_ids, padding_mask
+
 def run():
     import argparse
     parser = argparse.ArgumentParser(description="Command-line interface for the tokenizer")
-    parser.add_argument("--model", default="Qwen2.5-Coder-1.5B-4bit", 
-                        help="Model name for tokenization (default: Qwen2.5-Coder-1.5B-4bit)")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-0.5B", help="Model to use for tokenization (default: Qwen/Qwen2.5-Coder-0.5B)")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--encode", help="Text to encode into tokens")
     group.add_argument("--decode", help="Tokens to decode into text")
     args = parser.parse_args()
-    tokenizer = Tokenizer(model_name=args.model)
+    repo_name, model_name = args.model.split('/')
+    tokenizer = Tokenizer(repo_name=repo_name, model_name=model_name)
     if args.encode:
         try:
             tokens = tokenizer.encode(args.encode)
@@ -113,13 +154,21 @@ def run():
 
 def demo():
     print("===Demo===")
-    tokenizer = Tokenizer(model_name="Qwen2.5-Coder-1.5B-4bit")
+    tokenizer = Tokenizer(repo_name="Qwen", model_name="Qwen2.5-Coder-0.5B")
     text = "Hello, world!"
     tokens = tokenizer.encode(text)
     print(f"Encoded: {tokens}")
     decoded = tokenizer.decode(tokens)
     print(f"Decoded: {decoded}")
-    assert decoded == text, "Round trip failed!"
+    _, iids, pids, mask = tokenizer(["#write a quick sort algorithm", "#hello world"])
+    print(f"Batch:\n{iids=}\n{pids=}\n{mask=}")
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello!"},
+    ]
+    _, iids, pids, mask = tokenizer(messages, use_chat_template=True, add_generation_prompt=True, tools=None)
+    print(f"Format:\n{iids=}\n{pids=}\n{mask=}")
+    print(tokenizer.decode(iids[0]))
 
 if __name__ == "__main__":
     demo()

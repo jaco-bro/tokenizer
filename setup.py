@@ -17,7 +17,7 @@ class BuildZig(build):
 
 setup(
     name="tokenizerz",
-    version="0.0.1",
+    version="0.0.2a7",
     author="J Joe",
     author_email="backupjjoe@gmail.com",
     description="Minimal BPE tokenizer in Zig",
@@ -25,8 +25,9 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/jaco-bro/tokenizer",
     py_modules=['tokenizerz'],
-    python_requires=">=3.12.8",
-    install_requires=['ziglang==0.13.0.post1'],
+    # python_requires=">=3.12.8",
+    # install_requires=['ziglang==0.13.0.post1', 'jinja2==3.1.5'],
+    install_requires=['ziglang==0.13.0.post1', 'jinja2'],
     cmdclass={ 'build': BuildZig },
     data_files=[
         ('', ['build.zig', 'build.zig.zon']),

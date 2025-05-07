@@ -32,20 +32,16 @@ python
 Usage:
 ```python
 >>> import tokenizerz
-
 >>> tokenizer = tokenizerz.Tokenizer()
-File 'Qwen2.5-Coder-1.5B-4bit/tokenizer.json' already exists. Skipping download.
-All files already exist. No download needed.
-
+Directory 'Qwen2.5-Coder-0.5B' created successfully.
+DL% UL%  Dled  Uled  Xfers  Live Total     Current  Left    Speed
+100 --  6866k     0     1     0   0:00:01  0:00:01 --:--:-- 4904k
+Download successful.
 >>> tokens = tokenizer.encode("Hello, world!")
-
 >>> print(tokens)
 [9707, 11, 1879, 0]
-
 >>> tokenizer.decode(tokens)
 'Hello, world!'
-
->>> exit()
 ```
 
 Shell:

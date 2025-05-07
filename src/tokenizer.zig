@@ -71,8 +71,11 @@ pub const Tokenizer = struct {
     specials: []const []const u8,
     verbose: bool,
 
-    pub fn init(allocator: std.mem.Allocator, model_name: []const u8, verbose: bool) !Self {
-        try download(allocator, "mlx-community", model_name, null);
+    pub fn init(allocator: std.mem.Allocator, repo_name: []const u8, model_name: []const u8, verbose: bool) !Self {
+        // try download(allocator, repo_name, model_name, null);
+        // const json_path = try std.fmt.allocPrint(allocator, "{s}/tokenizer.json", .{model_name});
+        if (!std.mem.eql(u8, repo_name, "local")) try download(allocator, repo_name, model_name, null);
+        // const json_path = if (std.mem.eql(u8, repo_name, "local")) try allocator.dupe(u8, model_name) else try std.fmt.allocPrint(allocator, "{s}/tokenizer.json", .{model_name});
         const json_path = try std.fmt.allocPrint(allocator, "{s}/tokenizer.json", .{model_name});
         defer allocator.free(json_path);
         const json_content = try std.fs.cwd().readFileAlloc(allocator, json_path, 100 * 1024 * 1024);
@@ -492,7 +495,7 @@ fn download(allocator: std.mem.Allocator, repo_name: []const u8, model_name: []c
     const default_filenames = [_][]const u8{
         // "model.safetensors",
         // "config.json",
-        // "tokenizer_config.json",
+        "tokenizer_config.json",
         "tokenizer.json",
     };
     const filenames = if (file_names) |f| f else &default_filenames;
@@ -512,11 +515,12 @@ fn download(allocator: std.mem.Allocator, repo_name: []const u8, model_name: []c
     for (filenames) |filename| {
         const local_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ model_name, filename });
         try paths_to_free.append(local_path);
-        std.debug.print("{s}\n", .{local_path});
+        std.debug.print("File '{s}'", .{local_path});
         if (fileExists(local_path)) {
-            // std.debug.print("File '{s}' already exists. Skipping download.\n", .{local_path});
+            std.debug.print(" already exists. Skipping download.\n", .{});
         } else {
             all_exist = false;
+            std.debug.print(" is missing.\n", .{});
             const url_path = try std.fmt.allocPrint(allocator, "https://huggingface.co/{s}/{s}/resolve/main/{s}", .{ repo_name, model_name, filename });
             try paths_to_free.append(url_path);
             try args.append(url_path);
@@ -587,11 +591,12 @@ fn printUsage(program_name: []const u8) void {
 
 pub const TokenizerHandle = ?*anyopaque;
 
-export fn create_tokenizer(model_name: [*:0]const u8, verbose: bool) TokenizerHandle {
+export fn create_tokenizer(repo_name: [*:0]const u8, model_name: [*:0]const u8, verbose: bool) TokenizerHandle {
     const allocator = std.heap.c_allocator;
+    const repo_name_slice = std.mem.span(repo_name);
     const model_name_slice = std.mem.span(model_name);
     const tokenizer = allocator.create(Tokenizer) catch return null;
-    tokenizer.* = Tokenizer.init(allocator, model_name_slice, verbose) catch {
+    tokenizer.* = Tokenizer.init(allocator, repo_name_slice, model_name_slice, verbose) catch {
         allocator.destroy(tokenizer);
         return null;
     };
@@ -635,6 +640,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const repo_name = "mlx-community";
     var model_name: []const u8 = "Qwen2.5-Coder-1.5B-4bit";
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -678,7 +684,7 @@ pub fn main() !void {
     }
     std.debug.print("Using model: {s}\n", .{model_name});
     // try download(allocator, "mlx-community", model_name, null);
-    var tokenizer = try Tokenizer.init(allocator, model_name, true);
+    var tokenizer = try Tokenizer.init(allocator, repo_name, model_name, true);
     defer tokenizer.deinit();
     if (std.mem.eql(u8, command.?, "--encode")) {
         const encode_result = try tokenizer.encode(input.?);
@@ -702,9 +708,10 @@ pub fn main() !void {
 
 test "Tokenizer round-trip" {
     const allocator = std.testing.allocator;
+    const repo_name = "mlx-community";
     const model_name = "Qwen2.5-Coder-1.5B-4bit";
     // try download(allocator, "mlx-community", model_name, null);
-    var tokenizer = try Tokenizer.init(allocator, model_name, true);
+    var tokenizer = try Tokenizer.init(allocator, repo_name, model_name, true);
     defer tokenizer.deinit();
     const text =
         \\<|fim_prefix|>def quicksort(arr):
