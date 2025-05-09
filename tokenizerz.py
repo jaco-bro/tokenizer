@@ -58,7 +58,7 @@ class Tokenizer:
         token_buffer = (c_uint32 * max_tokens)()
         actual_tokens = self.lib.encode_text(self.handle, text_bytes, token_buffer, max_tokens)
         if actual_tokens == 0:
-            raise RuntimeError("Encoding failed")
+            raise RuntimeError(f"Encoding failed for {text}")
         if actual_tokens <= max_tokens:
             return [token_buffer[i] for i in range(actual_tokens)]
         token_buffer = (c_uint32 * actual_tokens)()
@@ -72,7 +72,7 @@ class Tokenizer:
         text_buffer = ctypes.create_string_buffer(max_text_len)
         actual_text_len = self.lib.decode_tokens(self.handle, tokens_arr, len(tokens), text_buffer, max_text_len)
         if actual_text_len == 0:
-            raise RuntimeError("Decoding failed")
+            raise RuntimeError(f"Decoding failed for {tokens}")
         if actual_text_len < max_text_len:
             return text_buffer.value.decode('utf-8')
         max_text_len = actual_text_len + 1 
@@ -88,7 +88,7 @@ class Tokenizer:
         if not self.chat_template:
             raise ValueError("No chat template available")
         if not (isinstance(messages, list) and all(isinstance(m, dict) for m in messages)):
-            raise ValueError("Messages must be a list of dictionaries")
+            raise ValueError(f"Messages must be a list of dictionaries but received {messages}")
         env = jinja2.Environment(autoescape=False)
         template = env.from_string(self.chat_template)
         try:

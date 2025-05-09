@@ -1,5 +1,7 @@
 # Tokenizer
-A Zig library for tokenizing text using PCRE2 regular expressions - now also available as a Python package via `pip`.
+BPE tokenizer implemented entirely in Zig.
+
+See the complete example integration with LLMs in the [nnx-lm](https://github.com/jaco-bro/nnx-lm).
 
 ## Requirement
 zig v0.13.0
