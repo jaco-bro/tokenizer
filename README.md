@@ -1,7 +1,7 @@
 # Tokenizer
 BPE tokenizer implemented entirely in Zig.
 
-Example integration with LLMs at [nnx-lm](https://github.com/jaco-bro/nnx-lm).
+Example integration with LLMs at [nnx-lm](https://pypi.org/project/nnx-lm).
 
 ## Requirement
 zig v0.13.0
