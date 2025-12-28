@@ -1,5 +1,5 @@
 # Tokenizer
-![Alt text](https://raw.githubusercontent.com/jaco-bro/tokenizerz/main/assets/tokenizerz.png)
+![Alt text](https://raw.githubusercontent.com/jaco-bro/tokenizer/main/assets/tokenizerz.png)
 
 BPE tokenizer implemented entirely in Zig.
 
