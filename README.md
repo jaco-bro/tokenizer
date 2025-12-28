@@ -1,4 +1,6 @@
 # Tokenizer
+![Alt text](https://raw.githubusercontent.com/jaco-bro/tokenizerz/main/assets/tokenizerz.png)
+
 BPE tokenizer implemented entirely in Zig.
 
 Example integration with LLMs at [nnx-lm](https://pypi.org/project/nnx-lm).
