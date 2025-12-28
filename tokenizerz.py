@@ -37,8 +37,8 @@ class Tokenizer:
             raise RuntimeError(f"Failed to initialize tokenizer with model: {model_name}")
         try:
             with open(f'{model_name}/tokenizer_config.json', 'r') as f:
-                config = json.load(f)
-            self.chat_template = config['chat_template']
+                self.config = json.load(f)
+            self.chat_template = self.config['chat_template']
         except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
             self.chat_template = None
             print(f"No chat template found: {e}")
@@ -66,19 +66,26 @@ class Tokenizer:
         return [token_buffer[i] for i in range(actual_tokens)]
     
     def decode(self, tokens):
-        arr_type = c_uint32 * len(tokens)
-        tokens_arr = arr_type(*tokens)
-        max_text_len = max(256, len(tokens) * 128 + 1)
-        text_buffer = ctypes.create_string_buffer(max_text_len)
-        actual_text_len = self.lib.decode_tokens(self.handle, tokens_arr, len(tokens), text_buffer, max_text_len)
-        if actual_text_len == 0:
-            raise RuntimeError(f"Decoding failed for {tokens}")
-        if actual_text_len < max_text_len:
-            return text_buffer.value.decode('utf-8')
-        max_text_len = actual_text_len + 1 
-        text_buffer = ctypes.create_string_buffer(max_text_len)
-        self.lib.decode_tokens(self.handle, tokens_arr, len(tokens), text_buffer, max_text_len)
-        return text_buffer.value.decode('utf-8')
+        token_array = (ctypes.c_uint32 * len(tokens))(*tokens)
+        initial_capacity = 4096 
+        out_buffer = ctypes.create_string_buffer(initial_capacity)
+        required_len = self.lib.decode_tokens(
+            self.handle, 
+            token_array, 
+            len(tokens), 
+            out_buffer, 
+            initial_capacity
+        )
+        if required_len >= initial_capacity:
+            out_buffer = ctypes.create_string_buffer(required_len + 1)
+            self.lib.decode_tokens(
+                self.handle, 
+                token_array, 
+                len(tokens), 
+                out_buffer, 
+                required_len + 1
+            )
+        return out_buffer.value.decode('utf-8', errors='replace')
 
     def __del__(self):
         if hasattr(self, 'handle') and self.handle:

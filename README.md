@@ -22,6 +22,8 @@ zig build run -- --encode "hello world"
 zig build run -- --decode "{14990, 1879}"
 zig build run -- --model "phi-4-4bit" --encode "hello world"
 zig build run -- --model "phi-4-4bit" --decode "15339 1917"
+zig build run -- --repo "Qwen" --model "Qwen3-0.6B" --encode "안녕"
+zig build run -- --repo "Qwen" --model "Qwen3-0.6B" --decode "126246 144370"
 ```
 
 ## Python (optional)

@@ -72,16 +72,15 @@ pub const Tokenizer = struct {
     verbose: bool,
 
     pub fn init(allocator: std.mem.Allocator, repo_name: []const u8, model_name: []const u8, verbose: bool) !Self {
-        // try download(allocator, repo_name, model_name, null);
-        // const json_path = try std.fmt.allocPrint(allocator, "{s}/tokenizer.json", .{model_name});
         if (!std.mem.eql(u8, repo_name, "local")) try download(allocator, repo_name, model_name, null);
-        // const json_path = if (std.mem.eql(u8, repo_name, "local")) try allocator.dupe(u8, model_name) else try std.fmt.allocPrint(allocator, "{s}/tokenizer.json", .{model_name});
         const json_path = try std.fmt.allocPrint(allocator, "{s}/tokenizer.json", .{model_name});
         defer allocator.free(json_path);
         const json_content = try std.fs.cwd().readFileAlloc(allocator, json_path, 100 * 1024 * 1024);
         defer allocator.free(json_content);
+
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_content, .{});
         defer parsed.deinit();
+
         var pattern_regex: ?Regex = null;
         const pre_tokenizer = parsed.value.object.get("pre_tokenizer");
         if (pre_tokenizer != null) {
@@ -99,11 +98,15 @@ pub const Tokenizer = struct {
         errdefer vocab.deinit();
         var id_to_token = std.AutoHashMap(u32, []const u8).init(allocator);
         errdefer id_to_token.deinit();
-        const replacements = [_]struct { bytes: [2]u8, replacement: u8 }{
-            .{ .bytes = .{ 0xC4, 0xA0 }, .replacement = ' ' },
-            .{ .bytes = .{ 0xC4, 0x8A }, .replacement = '\n' },
-            .{ .bytes = .{ 0xC4, 0x89 }, .replacement = '\t' },
+
+        const Replacement = struct { bytes: []const u8, replacement: u8 };
+        const replacements = [_]Replacement{
+            .{ .bytes = "\xE2\x96\x81", .replacement = ' ' }, // SPIECE_UNDERLINE (Gemma/Llama)
+            .{ .bytes = "\xC4\xA0", .replacement = ' ' }, // \u0120 (GPT-2)
+            .{ .bytes = "\xC4\x8A", .replacement = '\n' },
+            .{ .bytes = "\xC4\x89", .replacement = '\t' },
         };
+
         var vocab_iter = parsed.value.object.get("model").?.object.get("vocab").?.object.iterator();
         while (vocab_iter.next()) |entry| {
             const token_str = entry.key_ptr.*;
@@ -114,12 +117,9 @@ pub const Tokenizer = struct {
             while (i < token_str.len) {
                 var replaced = false;
                 for (replacements) |repl| {
-                    if (i + 1 < token_str.len and
-                        token_str[i] == repl.bytes[0] and
-                        token_str[i + 1] == repl.bytes[1])
-                    {
+                    if (std.mem.startsWith(u8, token_str[i..], repl.bytes)) {
                         try buf.append(repl.replacement);
-                        i += 2;
+                        i += repl.bytes.len;
                         replaced = true;
                         break;
                     }
@@ -133,6 +133,7 @@ pub const Tokenizer = struct {
             try vocab.put(processed_token, id);
             try id_to_token.put(id, processed_token);
         }
+
         var special_tokens = std.ArrayList([]const u8).init(allocator);
         defer special_tokens.deinit();
         const added_tokens = parsed.value.object.get("added_tokens").?.array;
@@ -143,15 +144,22 @@ pub const Tokenizer = struct {
             if (content != .string or id != .integer) continue;
             const token_id = @as(u32, @intCast(id.integer));
             const token_str = content.string;
+
             if (vocab.get(token_str)) |old_id| {
-                if (old_id != token_id) std.debug.print("Duplicate: {s} {d} -> {d}\n", .{ token_str, old_id, token_id });
-                continue;
+                if (old_id != token_id and verbose) {
+                    std.debug.print("Duplicate: {s} {d} -> {d}\n", .{ token_str, old_id, token_id });
+                }
             }
+
             const token_copy = try allocator.dupe(u8, token_str);
             try vocab.put(token_copy, token_id);
             try id_to_token.put(token_id, token_copy);
-            try special_tokens.append(token_copy);
+
+            if (!std.mem.startsWith(u8, token_str, "<unused")) {
+                try special_tokens.append(token_copy);
+            }
         }
+
         const specials = try allocator.dupe([]const u8, special_tokens.items);
         const special_regex = try createSpecialRegex(allocator, specials);
         return Self{
@@ -162,57 +170,6 @@ pub const Tokenizer = struct {
             .id_to_token = id_to_token,
             .specials = specials,
             .verbose = verbose,
-        };
-    }
-
-    pub fn initFromTikToken(allocator: std.mem.Allocator, pattern: []const u8, vocabulary_path: []const u8, specials_: []const []const u8) !Self {
-        const specials = try allocator.dupe([]const u8, specials_);
-        var pattern_regex = try Regex.init(pattern);
-        errdefer pattern_regex.deinit();
-        var vocab = std.StringHashMap(u32).init(allocator);
-        errdefer vocab.deinit();
-        var id_to_token = std.AutoHashMap(u32, []const u8).init(allocator);
-        errdefer id_to_token.deinit();
-        const file = try std.fs.cwd().openFile(vocabulary_path, .{});
-        defer file.close();
-        var buf_reader = std.io.bufferedReader(file.reader());
-        var in_stream = buf_reader.reader();
-        var line_buf: [1024]u8 = undefined;
-        while (try in_stream.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
-            if (line.len == 0) continue;
-            var iter = std.mem.tokenize(u8, line, " ");
-            const token_b64 = iter.next() orelse continue;
-            const rank_str = iter.next() orelse continue;
-            if (std.mem.eql(u8, token_b64, "=")) {
-                const token = try allocator.alloc(u8, 0);
-                const rank = try std.fmt.parseInt(u32, rank_str, 10);
-                try vocab.put(token, rank);
-                try id_to_token.put(rank, token);
-                continue;
-            }
-            const decoded_size = try std.base64.standard.Decoder.calcSizeForSlice(token_b64);
-            const token = try allocator.alloc(u8, decoded_size);
-            errdefer allocator.free(token);
-            _ = try std.base64.standard.Decoder.decode(token, token_b64);
-            const rank = try std.fmt.parseInt(u32, rank_str, 10);
-            try vocab.put(token, rank);
-            try id_to_token.put(rank, token);
-        }
-        const special_start = @as(u32, @intCast(vocab.count()));
-        for (specials, 0..) |special, i| {
-            const token = try allocator.dupe(u8, special);
-            const rank = special_start + @as(u32, @intCast(i));
-            try vocab.put(token, rank);
-            try id_to_token.put(rank, token);
-        }
-        const special_regex = try createSpecialRegex(allocator, specials);
-        return Self{
-            .allocator = allocator,
-            .pattern_regex = pattern_regex,
-            .special_regex = special_regex,
-            .vocab = vocab,
-            .id_to_token = id_to_token,
-            .specials = specials,
         };
     }
 
@@ -230,37 +187,6 @@ pub const Tokenizer = struct {
             regex.deinit();
         }
         self.allocator.free(self.specials);
-    }
-
-    fn loadVocabulary(self: *Self, path: []const u8) !void {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-        var buf_reader = std.io.bufferedReader(file.reader());
-        var in_stream = buf_reader.reader();
-        var line_buf: [1024]u8 = undefined;
-        var line_num: usize = 0;
-        while (try in_stream.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
-            if (line.len == 0) continue;
-            var iter = std.mem.tokenize(u8, line, " ");
-            const token_b64 = iter.next() orelse continue;
-            const rank_str = iter.next() orelse continue;
-            const decoded_size = try std.base64.standard.Decoder.calcSizeForSlice(token_b64);
-            const token = try self.allocator.alloc(u8, decoded_size);
-            errdefer self.allocator.free(token);
-            _ = try std.base64.standard.Decoder.decode(token, token_b64);
-            const rank = try std.fmt.parseInt(u32, rank_str, 10);
-            try self.vocab.put(token, rank);
-            try self.id_to_token.put(rank, token);
-            line_num += 1;
-        }
-        const special_start = @as(u32, @intCast(self.vocab.count()));
-        for (self.specials, 0..) |special, i| {
-            const token = try self.allocator.dupe(u8, special);
-            errdefer self.allocator.free(token);
-            const rank = special_start + @as(u32, @intCast(i));
-            try self.vocab.put(token, rank);
-            try self.id_to_token.put(rank, token);
-        }
     }
 
     fn createSpecialRegex(allocator: std.mem.Allocator, specials: []const []const u8) !?Regex {
@@ -286,9 +212,7 @@ pub const Tokenizer = struct {
     fn splitWithSpecials(self: *Self, text: []const u8) !std.ArrayList([]const u8) {
         var result = std.ArrayList([]const u8).init(self.allocator);
         errdefer {
-            for (result.items) |item| {
-                self.allocator.free(item);
-            }
+            for (result.items) |item| self.allocator.free(item);
             result.deinit();
         }
         if (self.special_regex == null) {
@@ -320,9 +244,7 @@ pub const Tokenizer = struct {
     fn splitWithPattern(self: *Self, text: []const u8) !std.ArrayList([]const u8) {
         var result = std.ArrayList([]const u8).init(self.allocator);
         errdefer {
-            for (result.items) |item| {
-                self.allocator.free(item);
-            }
+            for (result.items) |item| self.allocator.free(item);
             result.deinit();
         }
         if (self.pattern_regex == null) {
@@ -340,6 +262,12 @@ pub const Tokenizer = struct {
                 break;
             }
             const match = match_result.?;
+
+            if (match.start > start) {
+                const gap = try self.allocator.dupe(u8, text[start..match.start]);
+                try result.append(gap);
+            }
+
             const matched_text = try self.allocator.dupe(u8, text[match.start..match.end]);
             try result.append(matched_text);
             start = match.end;
@@ -355,12 +283,14 @@ pub const Tokenizer = struct {
             return result;
         }
         if (token.len == 0) return result;
+
         var boundaries = std.ArrayList(usize).init(self.allocator);
         defer boundaries.deinit();
         try boundaries.append(0);
         for (1..token.len + 1) |i| {
             try boundaries.append(i);
         }
+
         var did_merge = true;
         while (did_merge and boundaries.items.len > 2) {
             did_merge = false;
@@ -382,6 +312,7 @@ pub const Tokenizer = struct {
                 _ = boundaries.orderedRemove(i + 1);
             }
         }
+
         const num_tokens = boundaries.items.len - 1;
         for (0..num_tokens) |i| {
             const start = boundaries.items[i];
@@ -390,7 +321,7 @@ pub const Tokenizer = struct {
             if (self.vocab.get(segment)) |id| {
                 try result.append(id);
             } else {
-                if (self.verbose) std.debug.print("Warning: No ID found for segment: '{s}'\n", .{segment});
+                if (self.verbose) std.debug.print("Warning: No ID found for segment: '{s}' (Bytes: {any})\n", .{ segment, segment });
                 try result.append(0);
             }
         }
@@ -403,9 +334,7 @@ pub const Tokenizer = struct {
         errdefer result.deinit();
         var parts = try self.splitWithSpecials(text);
         defer {
-            for (parts.items) |part| {
-                self.allocator.free(part);
-            }
+            for (parts.items) |part| self.allocator.free(part);
             parts.deinit();
         }
         for (parts.items) |part| {
@@ -416,9 +345,7 @@ pub const Tokenizer = struct {
             }
             var tokens = try self.splitWithPattern(part);
             defer {
-                for (tokens.items) |token| {
-                    self.allocator.free(token);
-                }
+                for (tokens.items) |token| self.allocator.free(token);
                 tokens.deinit();
             }
             for (tokens.items) |token| {
@@ -466,11 +393,7 @@ pub const Tokenizer = struct {
     }
 };
 
-fn formatDynamic(
-    allocator: std.mem.Allocator,
-    chat_fmt: []const u8,
-    replacements: []const []const u8,
-) ![]const u8 {
+fn formatDynamic(allocator: std.mem.Allocator, chat_fmt: []const u8, replacements: []const []const u8) ![]const u8 {
     var segments = std.ArrayList([]const u8).init(allocator);
     defer segments.deinit();
     var splitter = std.mem.splitSequence(u8, chat_fmt, "{s}");
@@ -492,12 +415,7 @@ fn formatDynamic(
 }
 
 fn download(allocator: std.mem.Allocator, repo_name: []const u8, model_name: []const u8, file_names: ?[]const []const u8) !void {
-    const default_filenames = [_][]const u8{
-        // "model.safetensors",
-        // "config.json",
-        "tokenizer_config.json",
-        "tokenizer.json",
-    };
+    const default_filenames = [_][]const u8{ "tokenizer_config.json", "tokenizer.json" };
     const filenames = if (file_names) |f| f else &default_filenames;
     var args = std.ArrayList([]const u8).init(allocator);
     defer args.deinit();
@@ -506,9 +424,7 @@ fn download(allocator: std.mem.Allocator, repo_name: []const u8, model_name: []c
     try args.append("--parallel");
     var paths_to_free = std.ArrayList([]const u8).init(allocator);
     defer {
-        for (paths_to_free.items) |path| {
-            allocator.free(path);
-        }
+        for (paths_to_free.items) |path| allocator.free(path);
         paths_to_free.deinit();
     }
     var all_exist = true;
@@ -528,19 +444,14 @@ fn download(allocator: std.mem.Allocator, repo_name: []const u8, model_name: []c
             try args.append(local_path);
         }
     }
-    if (all_exist) {
-        // std.debug.print("All files already exist. No download needed.\n", .{});
-        return;
-    }
+    if (all_exist) return;
     try mkdir(model_name);
     var proc = std.process.Child.init(args.items, allocator);
     try proc.spawn();
     const result = try proc.wait();
     switch (result) {
         .Exited => |code| {
-            if (code == 0) {
-                std.debug.print("Download successful.\n", .{});
-            } else {
+            if (code == 0) std.debug.print("Download successful.\n", .{}) else {
                 std.debug.print("Download failed with exit code: {d}\n", .{code});
                 return error.DownloadFailed;
             }
@@ -578,7 +489,8 @@ fn printUsage(program_name: []const u8) void {
         \\  --decode TOKENS  Decode tokens to text
         \\
         \\Options:
-        \\  --model MODEL    Specify the model name (default: Qwen2.5-Coder-1.5B-4bit)
+        \\  --model MODEL 
+        \\    Specify the model name (default: Qwen2.5-Coder-1.5B-4bit)
         \\
         \\Examples:
         \\  {s} --encode "hello world"
@@ -636,21 +548,28 @@ export fn free_tokenizer(handle: TokenizerHandle) void {
     tokenizer.deinit();
     std.heap.c_allocator.destroy(tokenizer);
 }
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    const repo_name = "mlx-community";
+
+    // Changed to 'var' to allow modification via arguments
+    var repo_name: []const u8 = "mlx-community";
     var model_name: []const u8 = "Qwen2.5-Coder-1.5B-4bit";
+
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
+
     if (args.len < 2) {
         printUsage(args[0]);
         return error.InvalidArguments;
     }
+
     var i: usize = 1;
     var command: ?[]const u8 = null;
     var input: ?[]const u8 = null;
+
     while (i < args.len) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--model")) {
@@ -661,6 +580,14 @@ pub fn main() !void {
                 return error.MissingModelName;
             }
             model_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--repo")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: --repo requires a repository name\n", .{});
+                printUsage(args[0]);
+                return error.MissingRepoName;
+            }
+            repo_name = args[i];
         } else if (std.mem.eql(u8, arg, "--encode") or std.mem.eql(u8, arg, "--decode")) {
             command = arg;
             i += 1;
@@ -678,14 +605,18 @@ pub fn main() !void {
 
         i += 1;
     }
+
     if (command == null or input == null) {
         printUsage(args[0]);
         return error.MissingRequiredArguments;
     }
+
+    std.debug.print("Using repo: {s}\n", .{repo_name});
     std.debug.print("Using model: {s}\n", .{model_name});
-    // try download(allocator, "mlx-community", model_name, null);
+
     var tokenizer = try Tokenizer.init(allocator, repo_name, model_name, true);
     defer tokenizer.deinit();
+
     if (std.mem.eql(u8, command.?, "--encode")) {
         const encode_result = try tokenizer.encode(input.?);
         defer allocator.free(encode_result);
@@ -710,7 +641,6 @@ test "Tokenizer round-trip" {
     const allocator = std.testing.allocator;
     const repo_name = "mlx-community";
     const model_name = "Qwen2.5-Coder-1.5B-4bit";
-    // try download(allocator, "mlx-community", model_name, null);
     var tokenizer = try Tokenizer.init(allocator, repo_name, model_name, true);
     defer tokenizer.deinit();
     const text =
@@ -743,24 +673,4 @@ test "Tokenizer round-trip" {
     const match = std.mem.eql(u8, text, decoded_text);
     std.debug.print("   Original and decoded text match: {}\n", .{match});
     try std.testing.expect(match);
-    if (!match) {
-        var i: usize = 0;
-        const min_len = @min(text.len, decoded_text.len);
-        while (i < min_len and text[i] == decoded_text[i]) {
-            i += 1;
-        }
-        if (i < min_len) {
-            const start = if (i > 10) i - 10 else 0;
-            const end = @min(i + 10, min_len);
-            std.debug.print("\nFirst difference at position {d}:\n", .{i});
-            std.debug.print("  Original: ...{s}[{c}]{s}...\n", .{ text[start..i], text[i], text[i + 1 .. end] });
-            std.debug.print("  Decoded:  ...{s}[{c}]{s}...\n", .{ decoded_text[start..i], decoded_text[i], decoded_text[i + 1 .. end] });
-        } else if (text.len != decoded_text.len) {
-            if (text.len > decoded_text.len) {
-                std.debug.print("\nDecoded text is missing: '{s}'\n", .{text[min_len..]});
-            } else {
-                std.debug.print("\nDecoded text has extra: '{s}'\n", .{decoded_text[min_len..]});
-            }
-        }
-    }
 }

@@ -1,6 +1,6 @@
 .{
     .name = "tokenizer",
-    .version = "0.0.1",
+    .version = "0.0.2",
     .dependencies = .{
         .pcre2 = .{
             .url = "https://github.com/PCRE2Project/pcre2/archive/refs/tags/pcre2-10.45.tar.gz",
