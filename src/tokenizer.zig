@@ -99,10 +99,15 @@ pub const Tokenizer = struct {
         var id_to_token = std.AutoHashMap(u32, []const u8).init(allocator);
         errdefer id_to_token.deinit();
 
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+        var decoder_map = createDecoderMap(arena_allocator);
+
         const Replacement = struct { bytes: []const u8, replacement: u8 };
-        const replacements = [_]Replacement{
-            .{ .bytes = "\xE2\x96\x81", .replacement = ' ' }, // SPIECE_UNDERLINE (Gemma/Llama)
-            .{ .bytes = "\xC4\xA0", .replacement = ' ' }, // \u0120 (GPT-2)
+        const explicit_replacements = [_]Replacement{
+            .{ .bytes = "\xE2\x96\x81", .replacement = ' ' },
+            .{ .bytes = "\xC4\xA0", .replacement = ' ' },
             .{ .bytes = "\xC4\x8A", .replacement = '\n' },
             .{ .bytes = "\xC4\x89", .replacement = '\t' },
         };
@@ -111,12 +116,14 @@ pub const Tokenizer = struct {
         while (vocab_iter.next()) |entry| {
             const token_str = entry.key_ptr.*;
             const id = @as(u32, @intCast(entry.value_ptr.*.integer));
+
             var buf = std.ArrayList(u8).init(allocator);
             defer buf.deinit();
+
             var i: usize = 0;
             while (i < token_str.len) {
                 var replaced = false;
-                for (replacements) |repl| {
+                for (explicit_replacements) |repl| {
                     if (std.mem.startsWith(u8, token_str[i..], repl.bytes)) {
                         try buf.append(repl.replacement);
                         i += repl.bytes.len;
@@ -124,11 +131,20 @@ pub const Tokenizer = struct {
                         break;
                     }
                 }
-                if (!replaced) {
-                    try buf.append(token_str[i]);
-                    i += 1;
+                if (replaced) continue;
+
+                const char_len = std.unicode.utf8ByteSequenceLength(token_str[i]) catch 1;
+                const char_slice = token_str[i .. i + char_len];
+                const cp = std.unicode.utf8Decode(char_slice) catch 0;
+
+                if (decoder_map.get(cp)) |byte_val| {
+                    try buf.append(byte_val);
+                } else {
+                    try buf.appendSlice(char_slice);
                 }
+                i += char_len;
             }
+
             const processed_token = try buf.toOwnedSlice();
             try vocab.put(processed_token, id);
             try id_to_token.put(id, processed_token);
@@ -189,12 +205,40 @@ pub const Tokenizer = struct {
         self.allocator.free(self.specials);
     }
 
+    fn createDecoderMap(allocator: std.mem.Allocator) std.AutoHashMap(u21, u8) {
+        var map = std.AutoHashMap(u21, u8).init(allocator);
+        var n: u21 = 0;
+        var b: u16 = 0;
+        while (b < 256) : (b += 1) {
+            const byte_val = @as(u8, @intCast(b));
+            var cp: u21 = 0;
+            if ((b >= 33 and b <= 126) or (b >= 161 and b <= 172) or (b >= 174 and b <= 255)) {
+                cp = byte_val;
+            } else {
+                cp = 256 + n;
+                n += 1;
+            }
+            map.put(cp, byte_val) catch {};
+        }
+        return map;
+    }
+
     fn createSpecialRegex(allocator: std.mem.Allocator, specials: []const []const u8) !?Regex {
         if (specials.len == 0) return null;
+
+        const sorted_specials = try allocator.dupe([]const u8, specials);
+        defer allocator.free(sorted_specials);
+        std.mem.sort([]const u8, sorted_specials, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return a.len > b.len;
+            }
+        }.lessThan);
+
         var pattern = std.ArrayList(u8).init(allocator);
         defer pattern.deinit();
         var first = true;
-        for (specials) |special| {
+
+        for (sorted_specials) |special| {
             if (!first) {
                 try pattern.append('|');
             } else {

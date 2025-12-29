@@ -17,7 +17,7 @@ class BuildZig(build):
 
 setup(
     name="tokenizerz",
-    version="0.0.3a5",
+    version="0.0.3a8",
     author="J Joe",
     author_email="backupjjoe@gmail.com",
     description="Minimal BPE tokenizer in Zig",
